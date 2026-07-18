@@ -1,0 +1,55 @@
+{
+  "name": "pi-local-otel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Metadata-only OpenTelemetry lifecycle spans for Pi, logged to private local JSONL files.",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:audit": "npm audit --omit=dev --audit-level=low"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "opentelemetry",
+    "telemetry",
+    "observability"
+  ],
+  "author": "Bryce Adelstein Lelbach",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robobryce/pi-local-otel.git"
+  },
+  "homepage": "https://github.com/robobryce/pi-local-otel#readme",
+  "bugs": {
+    "url": "https://github.com/robobryce/pi-local-otel/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/resources": "2.9.0",
+    "@opentelemetry/sdk-trace-base": "2.9.0",
+    "@opentelemetry/semantic-conventions": "1.43.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
