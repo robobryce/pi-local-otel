@@ -6,7 +6,7 @@ import {
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionEvent } from "@earendil-works/pi-coding-agent";
 
 import { installLocalSpanCapture, type LocalSpanCapture } from "./local-capture.ts";
 
@@ -83,8 +83,10 @@ function finishSpan(span: Span | undefined, isError = false, attributes?: Attrib
 	span.end();
 }
 
-function guard(handler: (event: any, ctx: EventContext) => void) {
-	return (event: any, ctx: EventContext) => {
+type EventOf<T extends ExtensionEvent["type"]> = Extract<ExtensionEvent, { type: T }>;
+
+function guard<T extends ExtensionEvent["type"]>(handler: (event: EventOf<T>, ctx: EventContext) => void) {
+	return (event: EventOf<T>, ctx: EventContext) => {
 		try {
 			handler(event, ctx);
 		} catch {
@@ -125,7 +127,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"session_start",
-		guard((event, ctx) => {
+		guard<"session_start">((event, ctx) => {
 			finishSpan(sessionSpan);
 			sessionSpan = tracer.startSpan("pi.session", {
 				attributes: { ...contextAttributes(ctx), "pi.session.start_reason": event.reason },
@@ -135,7 +137,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"before_agent_start",
-		guard((_event, ctx) => {
+		guard<"before_agent_start">((_event, ctx) => {
 			finishSpan(agentSpan, true);
 			agentSpan = tracer.startSpan("pi.agent", { attributes: contextAttributes(ctx) });
 		}),
@@ -143,7 +145,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"turn_start",
-		guard((event, ctx) => {
+		guard<"turn_start">((event, ctx) => {
 			finishSpan(turnSpan, true);
 			turnSpan = tracer.startSpan("pi.turn", {
 				attributes: { ...contextAttributes(ctx), "pi.turn.index": event.turnIndex },
@@ -154,7 +156,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"turn_end",
-		guard((event) => {
+		guard<"turn_end">((event) => {
 			finishSpan(turnSpan, false, { "pi.turn.tool_result_count": event.toolResults.length });
 			turnSpan = undefined;
 		}),
@@ -162,7 +164,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"before_provider_request",
-		guard((_event, ctx) => {
+		guard<"before_provider_request">((_event, ctx) => {
 			finishSpan(providerSpan, true);
 			providerSpan = tracer.startSpan("pi.provider.request", {
 				attributes: { ...contextAttributes(ctx), "gen_ai.operation.name": "chat" },
@@ -172,7 +174,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"after_provider_response",
-		guard((event) => {
+		guard<"after_provider_response">((event) => {
 			finishSpan(providerSpan, event.status >= 400, { "http.response.status_code": event.status });
 			providerSpan = undefined;
 		}),
@@ -180,7 +182,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"message_end",
-		guard((event, ctx) => {
+		guard<"message_end">((event, ctx) => {
 			const message = event.message;
 			if (message?.role !== "assistant") return;
 			const attributes: Attributes = {
@@ -197,7 +199,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"tool_execution_start",
-		guard((event, ctx) => {
+		guard<"tool_execution_start">((event, ctx) => {
 			const existing = toolSpans.get(event.toolCallId);
 			finishSpan(existing, true);
 			toolSpans.set(
@@ -215,7 +217,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"tool_execution_end",
-		guard((event) => {
+		guard<"tool_execution_end">((event) => {
 			const span = toolSpans.get(event.toolCallId);
 			finishSpan(span, event.isError, {
 				"gen_ai.tool.call.id": event.toolCallId,
@@ -228,7 +230,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"session_compact",
-		guard((event, ctx) => {
+		guard<"session_compact">((event, ctx) => {
 			const span = tracer.startSpan("pi.session.compact", {
 				attributes: {
 					...contextAttributes(ctx),
@@ -242,7 +244,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"model_select",
-		guard((event, ctx) => {
+		guard<"model_select">((event, ctx) => {
 			const span = tracer.startSpan("pi.model.select", {
 				attributes: {
 					...contextAttributes(ctx),
@@ -257,7 +259,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"thinking_level_select",
-		guard((event, ctx) => {
+		guard<"thinking_level_select">((event, ctx) => {
 			const span = tracer.startSpan("pi.thinking.select", {
 				attributes: {
 					...contextAttributes(ctx),
@@ -271,7 +273,7 @@ export default function localOtel(pi: ExtensionAPI): void {
 
 	pi.on(
 		"agent_settled",
-		guard((_event) => {
+		guard<"agent_settled">((_event) => {
 			finishSpan(providerSpan, true);
 			providerSpan = undefined;
 			finishSpan(turnSpan, true);
