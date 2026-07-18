@@ -16,12 +16,13 @@ pi install git:github.com/robobryce/pi-local-otel@COMMIT
 
 Spans contain lifecycle names, session/model/tool identifiers, durations, status, token usage, cache usage, and reported cost. They never include prompts, responses, message content, tool arguments, tool results, headers, raw provider payloads, working directories, or error text.
 
-Each Pi process writes a unique mode-`0600` JSONL file in a mode-`0700` directory. Set `PI_OTEL_LOG_DIR` to choose another directory or `PI_OTEL_TEE_CONSOLE=1` to retain the exporter output on the console as well. Set `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` to disable the extension.
+Each Pi process writes a unique mode-`0600` JSONL file in a mode-`0700` directory. Existing log directories must already be private, owned by the current user, and not be symbolic links; telemetry stays disabled if the local sink cannot be opened safely. Set `PI_OTEL_LOG_DIR` to choose another directory or `PI_OTEL_TEE_CONSOLE=1` to retain the exporter output on the console as well. Set `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` to disable the extension.
 
 ## Development
 
 ```bash
 npm ci
+npm run typecheck
 npm test
 npm run test:audit
 ```

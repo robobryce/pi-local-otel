@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "test:audit": "npm audit --omit=dev --audit-level=low"
+    "test:audit": "npm audit --omit=dev --audit-level=low",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "pi-package",
@@ -38,6 +39,11 @@
     "@opentelemetry/resources": "2.9.0",
     "@opentelemetry/sdk-trace-base": "2.9.0",
     "@opentelemetry/semantic-conventions": "1.43.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

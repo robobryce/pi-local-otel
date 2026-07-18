@@ -96,11 +96,12 @@ function guard(handler: (event: any, ctx: EventContext) => void) {
 export default function localOtel(pi: ExtensionAPI): void {
 	if (isDisabled()) return;
 
-	let capture: LocalSpanCapture | undefined;
+	let capture: LocalSpanCapture;
 	try {
 		capture = installLocalSpanCapture();
 	} catch {
-		console.warn("[pi-local-otel] Local JSONL capture is unavailable; spans will remain on the console.");
+		console.warn("[pi-local-otel] Local JSONL capture is unavailable; telemetry is disabled.");
+		return;
 	}
 
 	const resource = defaultResource().merge(
@@ -292,9 +293,10 @@ export default function localOtel(pi: ExtensionAPI): void {
 			finishSpan(sessionSpan, false, { "pi.session.shutdown_reason": event.reason });
 			await provider.forceFlush();
 			await provider.shutdown();
-			capture?.restore();
 		} catch {
 			// Telemetry shutdown must never change Pi behavior.
+		} finally {
+			capture.restore();
 		}
 	});
 }

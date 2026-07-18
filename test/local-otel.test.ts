@@ -4,33 +4,93 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+
 import localOtel from "../src/index.ts";
 import { installLocalSpanCapture } from "../src/local-capture.ts";
 
 test("selective capture writes private local span JSONL", () => {
+	const secret = "CAPTURE-MUST-DROP-UNAPPROVED-FIELDS";
 	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-capture-"));
 	process.env.PI_OTEL_LOG_DIR = logDir;
 	const capture = installLocalSpanCapture();
 	console.dir({
-		resource: { attributes: { "service.name": "pi-coding-agent" } },
-		instrumentationScope: { name: "pi-local-otel", version: "test" },
+		resource: { attributes: { "service.name": "pi-coding-agent", "secret.resource": secret } },
+		instrumentationScope: { name: "pi-local-otel", version: "0.1.0" },
 		traceId: "0123456789abcdef0123456789abcdef",
 		id: "0123456789abcdef",
-		duration: [0, 1],
-		name: "pi.test",
+		timestamp: Date.now() * 1000,
+		duration: 1,
+		name: "pi.turn",
+		attributes: { "pi.mode": "test", prompt: secret },
+		status: { code: 0, message: secret },
+		events: [{ name: secret }],
+		links: [{ attributes: { secret } }],
 	});
 	capture.restore();
 
 	assert.equal(fs.statSync(logDir).mode & 0o777, 0o700);
 	assert.equal(fs.statSync(capture.logFile).mode & 0o777, 0o600);
-	const records = fs
-		.readFileSync(capture.logFile, "utf8")
+	const output = fs.readFileSync(capture.logFile, "utf8");
+	assert.ok(!output.includes(secret));
+	const records = output
 		.trim()
 		.split("\n")
 		.map((line) => JSON.parse(line));
 	assert.equal(records.length, 1);
 	assert.equal(records[0].signal, "traces");
-	assert.equal(records[0].record.name, "pi.test");
+	assert.equal(records[0].record.name, "pi.turn");
+	assert.deepEqual(records[0].record.attributes, { "pi.mode": "test" });
+});
+
+test("insecure log directories disable telemetry without changing their mode", () => {
+	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-insecure-"));
+	fs.chmodSync(logDir, 0o755);
+	process.env.PI_OTEL_LOG_DIR = logDir;
+	process.env.OTEL_SDK_DISABLED = "false";
+	process.env.OTEL_TRACES_EXPORTER = "console";
+	const handlers: unknown[] = [];
+	const originalWarn = console.warn;
+	console.warn = () => {};
+	try {
+		localOtel({ on: (_name: string, handler: unknown) => handlers.push(handler) } as any);
+	} finally {
+		console.warn = originalWarn;
+	}
+	assert.equal(handlers.length, 0);
+	assert.equal(fs.statSync(logDir).mode & 0o777, 0o755);
+});
+
+test("capture is restored when OpenTelemetry shutdown rejects", async () => {
+	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-shutdown-"));
+	process.env.PI_OTEL_LOG_DIR = logDir;
+	process.env.OTEL_SDK_DISABLED = "false";
+	process.env.OTEL_TRACES_EXPORTER = "console";
+	const originalDir = console.dir;
+	const originalShutdown = ConsoleSpanExporter.prototype.shutdown;
+	ConsoleSpanExporter.prototype.shutdown = async () => {
+		throw new Error("Expected test failure.");
+	};
+	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+	try {
+		localOtel({
+			on(name: string, handler: (event: any, ctx: any) => unknown) {
+				handlers.set(name, [handler]);
+			},
+		} as any);
+		assert.notEqual(console.dir, originalDir);
+		const ctx = {
+			mode: "print",
+			sessionManager: { getSessionId: () => "shutdown-test" },
+			model: undefined,
+		};
+		await handlers.get("session_start")?.[0]({ type: "session_start", reason: "startup" }, ctx);
+		await handlers.get("session_shutdown")?.[0]({ type: "session_shutdown", reason: "quit" }, ctx);
+		assert.equal(console.dir, originalDir);
+	} finally {
+		ConsoleSpanExporter.prototype.shutdown = originalShutdown;
+		console.dir = originalDir;
+	}
 });
 
 test("lifecycle spans exclude prompts, payloads, headers, results, and error text", async () => {
