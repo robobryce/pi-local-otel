@@ -46,8 +46,11 @@ const hostMaterial = [
 ].join("\0");
 const bootMaterial = readIdentityFile("/proc/sys/kernel/random/boot_id");
 const HAS_STABLE_BOOT_ID = bootMaterial !== undefined;
+const UNKNOWN_BOOT_ID = "000000000000";
 const HOST_ID = hashedIdentifier(hostMaterial, 16);
-const BOOT_ID = bootMaterial ? hashedIdentifier(`${hostMaterial}\0${bootMaterial}`, 12) : "000000000000";
+const BOOT_ID = bootMaterial
+	? hashedIdentifier(`${hostMaterial}\0${bootMaterial}`, 12)
+	: UNKNOWN_BOOT_ID;
 
 const ALLOWED_SPAN_NAMES = new Set([
 	"pi.agent",
@@ -219,7 +222,9 @@ function logProcessMayBeAlive(log: RetainedLog): boolean {
 		if (inactive.dev === log.stats.dev && inactive.ino === log.stats.ino) return false;
 		inactiveLogFiles.delete(log.name);
 	}
-	if (HAS_STABLE_BOOT_ID && log.bootId !== BOOT_ID) return false;
+	if (HAS_STABLE_BOOT_ID && log.bootId !== UNKNOWN_BOOT_ID && log.bootId !== BOOT_ID) {
+		return false;
+	}
 	try {
 		process.kill(log.pid, 0);
 		return true;
@@ -283,7 +288,16 @@ function unlinkUnchangedLog(
 	}
 	try {
 		const opened = fs.fstatSync(descriptor);
-		const current = fs.lstatSync(log.path);
+		let current: fs.Stats;
+		try {
+			current = fs.lstatSync(log.path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				inactiveLogFiles.delete(log.name);
+				return true;
+			}
+			throw error;
+		}
 		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
 		if (
 			current.isSymbolicLink() ||
@@ -334,14 +348,6 @@ function pruneLogs(
 			unlinkUnchangedLog(log, validateDirectory);
 		}
 	}
-	if (
-		retainedLogs(accessLogDir).some(
-			(log) => log.name !== protectedName && log.stats.size > maxFileBytes,
-		)
-	) {
-		throw new Error("The telemetry file-size retention limit could not be enforced.");
-	}
-
 	const retained = retainedLogs(accessLogDir).sort((left, right) => {
 		const leftIsEmpty = left.stats.size === 0;
 		const rightIsEmpty = right.stats.size === 0;
@@ -354,7 +360,8 @@ function pruneLogs(
 		if (log.name === protectedName) continue;
 		if (unlinkUnchangedLog(log, validateDirectory)) excess -= 1;
 	}
-	if (excess > 0) throw new Error("The telemetry retention limit could not be enforced.");
+	// Live/protected logs may temporarily exceed the target. A later startup or
+	// first write repairs the count after their PIDs are no longer active.
 	validateDirectory();
 }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -379,8 +380,108 @@ test("retention removes empty and oldest owned logs without following symlinks",
 	}
 });
 
-test("retention never unlinks a log whose process may still be alive", () => {
+test("an ENOENT after opening a prune candidate is treated as already removed", () => {
+	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-prune-race-"));
+	const previous = {
+		PI_OTEL_LOG_DIR: process.env.PI_OTEL_LOG_DIR,
+		PI_OTEL_LOG_FILE: process.env.PI_OTEL_LOG_FILE,
+		PI_OTEL_MAX_FILES: process.env.PI_OTEL_MAX_FILES,
+	};
+	process.env.PI_OTEL_LOG_DIR = logDir;
+	process.env.PI_OTEL_MAX_FILES = "1";
+	const first = installLocalSpanCapture();
+	console.dir(testSpan({ "pi.mode": "prune-race-source" }));
+	first.restore();
+
+	const candidateName = path.basename(first.logFile);
+	const originalOpenSync = fs.openSync;
+	const originalLstatSync = fs.lstatSync;
+	const originalCloseSync = fs.closeSync;
+	const mutableFs = fs as unknown as {
+		closeSync: typeof fs.closeSync;
+		lstatSync: typeof fs.lstatSync;
+		openSync: typeof fs.openSync;
+	};
+	let candidateDescriptor: number | undefined;
+	let candidateDescriptorClosed = false;
+	let injected = false;
+	let capture: ReturnType<typeof installLocalSpanCapture> | undefined;
+	let replacementLog: string | undefined;
+
+	mutableFs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+		const descriptor = Reflect.apply(originalOpenSync, fs, args) as number;
+		if (path.basename(String(args[0])) === candidateName) candidateDescriptor = descriptor;
+		return descriptor;
+	}) as typeof fs.openSync;
+	mutableFs.lstatSync = ((...args: Parameters<typeof fs.lstatSync>) => {
+		if (
+			!injected &&
+			candidateDescriptor !== undefined &&
+			path.basename(String(args[0])) === candidateName
+		) {
+			injected = true;
+			fs.unlinkSync(first.logFile);
+			const error = new Error("simulated concurrent prune") as NodeJS.ErrnoException;
+			error.code = "ENOENT";
+			throw error;
+		}
+		return Reflect.apply(originalLstatSync, fs, args);
+	}) as typeof fs.lstatSync;
+	mutableFs.closeSync = ((descriptor: number) => {
+		if (descriptor === candidateDescriptor) candidateDescriptorClosed = true;
+		return originalCloseSync(descriptor);
+	}) as typeof fs.closeSync;
+
+	try {
+		capture = installLocalSpanCapture();
+		replacementLog = capture.logFile;
+		console.dir(testSpan({ "pi.mode": "prune-race-winner" }));
+		capture.restore();
+	} finally {
+		capture?.restore();
+		mutableFs.openSync = originalOpenSync;
+		mutableFs.lstatSync = originalLstatSync;
+		mutableFs.closeSync = originalCloseSync;
+		restoreEnvironment(previous);
+	}
+
+	assert.equal(injected, true);
+	assert.equal(candidateDescriptorClosed, true);
+	assert.equal(fs.existsSync(first.logFile), false);
+	assert.ok(replacementLog && fs.existsSync(replacementLog));
+});
+
+test("retention never unlinks or blocks on an oversized log whose process may still be alive", () => {
 	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-live-log-"));
+	const previous = {
+		PI_OTEL_LOG_DIR: process.env.PI_OTEL_LOG_DIR,
+		PI_OTEL_LOG_FILE: process.env.PI_OTEL_LOG_FILE,
+		PI_OTEL_MAX_FILE_BYTES: process.env.PI_OTEL_MAX_FILE_BYTES,
+		PI_OTEL_MAX_FILES: process.env.PI_OTEL_MAX_FILES,
+	};
+	process.env.PI_OTEL_LOG_DIR = logDir;
+	process.env.PI_OTEL_MAX_FILE_BYTES = "1200";
+	process.env.PI_OTEL_MAX_FILES = "1";
+	try {
+		const prospective = installLocalSpanCapture();
+		const liveLog = prospective.logFile;
+		prospective.restore();
+		fs.writeFileSync(liveLog, "x".repeat(1500), { flag: "wx", mode: 0o600 });
+
+		const capture = installLocalSpanCapture();
+		console.dir(testSpan({ "pi.mode": "live-log" }));
+		capture.restore();
+
+		assert.equal(fs.existsSync(liveLog), true);
+		assert.equal(fs.statSync(liveLog).size, 1500);
+		assert.equal(fs.existsSync(capture.logFile), true);
+	} finally {
+		restoreEnvironment(previous);
+	}
+});
+
+test("an unknown stored boot ID falls back to live-PID protection", (context) => {
+	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-unknown-boot-"));
 	const previous = {
 		PI_OTEL_LOG_DIR: process.env.PI_OTEL_LOG_DIR,
 		PI_OTEL_LOG_FILE: process.env.PI_OTEL_LOG_FILE,
@@ -390,17 +491,119 @@ test("retention never unlinks a log whose process may still be alive", () => {
 	process.env.PI_OTEL_MAX_FILES = "1";
 	try {
 		const prospective = installLocalSpanCapture();
-		const liveLog = prospective.logFile;
 		prospective.restore();
-		fs.closeSync(fs.openSync(liveLog, "wx", 0o600));
+		const knownName = path.basename(prospective.logFile);
+		const unknownName = knownName.replace(
+			/(Z-[0-9a-f]{16})-[0-9a-f]{12}-/,
+			"$1-000000000000-",
+		);
+		if (unknownName === knownName) {
+			context.skip("This platform does not expose a stable current boot ID.");
+			return;
+		}
+		const unknownBootLog = path.join(logDir, unknownName);
+		fs.writeFileSync(unknownBootLog, "live unknown boot\n", { mode: 0o600 });
 
 		const capture = installLocalSpanCapture();
-		console.dir(testSpan({ "pi.mode": "live-log" }));
+		console.dir(testSpan({ "pi.mode": "unknown-boot" }));
 		capture.restore();
 
-		assert.equal(fs.existsSync(liveLog), true);
-		assert.equal(fs.statSync(liveLog).size, 0);
-		assert.equal(fs.existsSync(capture.logFile), false);
+		assert.equal(fs.readFileSync(unknownBootLog, "utf8"), "live unknown boot\n");
+		assert.equal(fs.existsSync(capture.logFile), true);
+	} finally {
+		restoreEnvironment(previous);
+	}
+});
+
+test("concurrent creators make progress and a later capture repairs the count", async () => {
+	const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-concurrent-"));
+	const barrierDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-local-otel-barrier-"));
+	const childCount = 12;
+	const captureModule = new URL("../src/local-capture.ts", import.meta.url).href;
+	const childProgram = String.raw`
+		import fs from "node:fs";
+		const { installLocalSpanCapture } = await import(process.env.CAPTURE_MODULE);
+		const capture = installLocalSpanCapture();
+		fs.writeFileSync(process.env.READY_FILE, "ready", { mode: 0o600 });
+		const waitArray = new Int32Array(new SharedArrayBuffer(4));
+		const deadline = Date.now() + 10_000;
+		while (fs.readdirSync(process.env.BARRIER_DIR).length < Number(process.env.CHILD_COUNT)) {
+			if (Date.now() > deadline) throw new Error("concurrency barrier timed out");
+			Atomics.wait(waitArray, 0, 0, 10);
+		}
+		console.dir({
+			resource: { attributes: { "service.name": "pi-coding-agent" } },
+			instrumentationScope: { name: "pi-local-otel", version: "0.1.0" },
+			traceId: "0123456789abcdef0123456789abcdef",
+			id: "0123456789abcdef",
+			timestamp: Date.now() * 1000,
+			duration: 1,
+			name: "pi.turn",
+			attributes: { "pi.mode": "concurrent" },
+			status: { code: 0 },
+		});
+		fs.writeFileSync(process.env.WRITTEN_FILE, "written", { mode: 0o600 });
+		while (fs.readdirSync(process.env.BARRIER_DIR).filter((name) => name.startsWith("written-")).length < Number(process.env.CHILD_COUNT)) {
+			if (Date.now() > deadline) throw new Error("write barrier timed out");
+			Atomics.wait(waitArray, 0, 0, 10);
+		}
+		const wrote = fs.existsSync(capture.logFile) && fs.statSync(capture.logFile).size > 0;
+		capture.restore();
+		process.stdout.write(wrote ? "1" : "0");
+	`;
+
+	const children = Array.from({ length: childCount }, (_, index) => {
+		return new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve) => {
+			const child = spawn(
+				process.execPath,
+				["--experimental-strip-types", "--input-type=module", "--eval", childProgram],
+				{
+					env: {
+						...process.env,
+						BARRIER_DIR: barrierDir,
+						CAPTURE_MODULE: captureModule,
+						CHILD_COUNT: String(childCount),
+						PI_OTEL_LOG_DIR: logDir,
+						PI_OTEL_MAX_FILE_BYTES: "8192",
+						PI_OTEL_MAX_FILES: "1",
+						PI_OTEL_TEE_CONSOLE: "0",
+						READY_FILE: path.join(barrierDir, `ready-${index}`),
+						WRITTEN_FILE: path.join(barrierDir, `written-${index}`),
+					},
+				},
+			);
+			let stdout = "";
+			let stderr = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+			child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+			child.on("close", (code) => resolve({ code, stderr, stdout }));
+		});
+	});
+	const results = await Promise.all(children);
+	for (const result of results) assert.equal(result.code, 0, result.stderr);
+	assert.ok(
+		results.every((result) => result.stdout === "1"),
+		"one or more concurrent captures starved",
+	);
+
+	const beforeRepair = fs.readdirSync(logDir).filter((name) => name.endsWith(".jsonl"));
+	assert.equal(beforeRepair.length, childCount);
+
+	const previous = {
+		PI_OTEL_LOG_DIR: process.env.PI_OTEL_LOG_DIR,
+		PI_OTEL_LOG_FILE: process.env.PI_OTEL_LOG_FILE,
+		PI_OTEL_MAX_FILE_BYTES: process.env.PI_OTEL_MAX_FILE_BYTES,
+		PI_OTEL_MAX_FILES: process.env.PI_OTEL_MAX_FILES,
+	};
+	process.env.PI_OTEL_LOG_DIR = logDir;
+	process.env.PI_OTEL_MAX_FILE_BYTES = "8192";
+	process.env.PI_OTEL_MAX_FILES = "1";
+	try {
+		const repair = installLocalSpanCapture();
+		console.dir(testSpan({ "pi.mode": "repair" }));
+		repair.restore();
+		const afterRepair = fs.readdirSync(logDir).filter((name) => name.endsWith(".jsonl"));
+		assert.deepEqual(afterRepair, [path.basename(repair.logFile)]);
 	} finally {
 		restoreEnvironment(previous);
 	}
@@ -430,7 +633,7 @@ test("closed-log identity never authorizes a same-name file in another directory
 		capture.restore();
 
 		assert.equal(fs.existsSync(collision), true);
-		assert.equal(fs.existsSync(capture.logFile), false);
+		assert.equal(fs.existsSync(capture.logFile), true);
 	} finally {
 		restoreEnvironment(previous);
 	}
