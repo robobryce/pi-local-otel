@@ -37,7 +37,7 @@
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/resources": "2.9.0",
-    "@opentelemetry/sdk-trace-base": "2.9.0",
+    "@opentelemetry/sdk-trace-base": "2.10.0",
     "@opentelemetry/semantic-conventions": "1.43.0"
   },
   "devDependencies": {
