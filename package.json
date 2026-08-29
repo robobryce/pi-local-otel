@@ -41,7 +41,7 @@
     "@opentelemetry/semantic-conventions": "1.43.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.84.3",
     "@types/node": "24.13.3",
     "typescript": "7.0.2"
   },
